@@ -5,7 +5,7 @@
 **This phase:** endpoint inventory and API surface boundaries only.  
 **Not in this phase:** detailed request/response schemas, field validation tables, HTTP status catalogs, success/error envelopes.
 
-Path conventions below are **inventory proposals** unless marked **FINAL**. Items marked **OPEN** still need an explicit decision before schema work.
+Path conventions below are **inventory proposals** unless marked **FINAL**. Inventory OPEN count for MVP API surface: **0**.
 
 ---
 
@@ -214,36 +214,43 @@ References Product Architecture §6 (INACTIVE/ACTIVE, `publishedAt`, checklist, 
 
 No hard-delete endpoint. Active flag via dedicated lifecycle actions (single convention; no parallel `mark-active` aliases).
 
-| Method | Path (proposed) | Purpose | Auth |
+| Method | Path | Purpose | Auth |
 | --- | --- | --- | --- |
-| `GET` | `/api/business/services` | List | Owner (Staff read **OPEN** — PA implies Owner manages; Staff may need read for booking UX → prefer allow Staff read-only) |
-| `GET` | `/api/business/services/:id` | Detail | Owner (+ Staff read recommended) |
+| `GET` | `/api/business/services` | List (booking UX) | Owner; Staff **read-only** (FINAL) |
+| `GET` | `/api/business/services/:id` | Detail | Owner; Staff **read-only** |
 | `POST` | `/api/business/services` | Create | Owner |
-| `PATCH` | `/api/business/services/:id` | Update fields (not a substitute for activate/deactivate if those are explicit) | Owner |
+| `PATCH` | `/api/business/services/:id` | Update fields (not a substitute for activate/deactivate) | Owner |
 | `POST` | `/api/business/services/:id/activate` | Set active | Owner |
 | `POST` | `/api/business/services/:id/deactivate` | Set inactive | Owner |
 
-**Count: 6** — Staff read access: **OPEN** (recommendation: Staff `GET` allowed; mutate Owner-only).
+**Count: 6** — Staff may read; only Owner mutates. No attach/detach-on-service endpoints (Staff–Service is §8).
 
 ---
 
 ## 8. Staff
 
-| Method | Path (proposed) | Purpose | Auth |
+| Method | Path | Purpose | Auth |
 | --- | --- | --- | --- |
-| `GET` | `/api/business/staff` | List staff | Owner; Staff may see self only — **OPEN** list shape for Staff |
+| `GET` | `/api/business/staff` | List staff | Owner (all); Staff → own staff only (FINAL) |
 | `GET` | `/api/business/staff/:id` | Detail | Owner; Staff own id only |
 | `POST` | `/api/business/staff` | Create bookable Staff (login optional until invited) | Owner |
 | `PATCH` | `/api/business/staff/:id` | Update display name / links / etc. | Owner |
 | `POST` | `/api/business/staff/:id/activate` | Activate | Owner |
 | `POST` | `/api/business/staff/:id/deactivate` | Deactivate (blocked if future CONFIRMED) | Owner |
-| `PUT` | `/api/business/staff/:id/services` | Replace Staff–Service set (unlink preserves appointments) | Owner |
+| `GET` | `/api/business/staff/:id/services` | Staff–Service relations (active/inactive links as stored) | Owner (any staff); Staff **own** `staffId` only — **FINAL** |
+| `PUT` | `/api/business/staff/:id/services` | Replace entire Staff–Service set (`{ "serviceIds": [...] }`); same-business ids; inactive services may remain linked; appointments preserved on unlink | **Owner only** — **FINAL** |
 
 Invitations: see §3.2 (`POST/GET/revoke` under `/api/business/invitations`).
 
-**Count: 7** (+ invitations already counted)
+**Count: 8** (+ invitations already counted)
 
-Authorization: Owner manages all; Staff cannot manage schedules/staff records (PA). Staff deactivate of “self” as staff profile follows PA (Owner action).
+Rules (FINAL) for Staff–Service:
+
+- Replacement semantics only on `PUT` (full `serviceIds` list).
+- No `POST .../attach`, `DELETE .../detach`, or service-centric attach endpoints.
+- Does not change Product Architecture Staff–Service model.
+
+Authorization: Owner manages staff records/hours/invites; Staff cannot mutate staff admin resources. Staff may `GET` own staff detail/services and read services catalog for booking UX.
 
 ---
 
@@ -275,11 +282,20 @@ Staff cannot update own hours/TimeOff (Owner-only).
 
 Public availability is §4. Admin manual booking needs the same engine without relying on the public slug surface.
 
-| Method | Path (proposed) | Purpose | Auth |
+| Method | Path | Purpose | Auth |
 | --- | --- | --- | --- |
-| `GET` | `/api/business/availability` | Slots for service/staff/date for manual booking; Owner may request override-aware previews **OPEN** whether override is query flag or only enforced at create | Owner, Staff (own staff only) |
+| `GET` | `/api/business/availability` | Normal availability only: business hours ∩ staff hours − TimeOff − closed dates − blocking appointments − buffer (same engine rules as public; no override mode) | Owner; Staff (own staff only) |
 
 **Count: 1**
+
+### Owner override — FINAL (mutation-only)
+
+- **No** separate `override-preview` / `preview-availability` endpoint and **no** override query flag on `GET .../availability`.
+- `overrideHours` is accepted only on **manual booking create** and **admin reschedule** mutation bodies (e.g. `{ "overrideHours": true }`).
+- Only **OWNER** may set `overrideHours: true`. STAFF is always treated as `false`.
+- Server derives role from authenticated membership; client-supplied role/business claims are not trusted.
+- Override may relax business/staff hours, TimeOff, and closed-date constraints per Product Architecture.
+- Override **never** bypasses: past time, overlap/double-booking, inactive staff/service, missing staff–service relationship.
 
 ---
 
@@ -300,9 +316,9 @@ POST /api/business/appointments/:id/no-show
 | --- | --- | --- | --- |
 | `GET` | `/api/business/appointments` | Calendar/range list (`from`/`to` local dates, optional `staffId`); max 500 + `truncated` | Owner (all/filter); Staff forced to own staff |
 | `GET` | `/api/business/appointments/:id` | Detail drawer payload | Owner any; Staff own |
-| `POST` | `/api/business/appointments` | Manual create (`source` OWNER/STAFF; optional `overrideHours` Owner-only; customerId or create-inline) | Owner, Staff |
+| `POST` | `/api/business/appointments` | Manual create (`source` OWNER/STAFF; optional `overrideHours` **Owner-only**, FINAL — see §10) | Owner, Staff |
 | `POST` | `/api/business/appointments/:id/cancel` | Cancel before start | Owner, Staff (own) |
-| `POST` | `/api/business/appointments/:id/reschedule` | In-place reschedule | Owner, Staff (own; no staff change) |
+| `POST` | `/api/business/appointments/:id/reschedule` | In-place reschedule; optional `overrideHours` **Owner-only** (FINAL) | Owner, Staff (own; no staff change for Staff) |
 | `POST` | `/api/business/appointments/:id/complete` | CONFIRMED→COMPLETED or NO_SHOW→COMPLETED | Owner, Staff (own) |
 | `POST` | `/api/business/appointments/:id/no-show` | CONFIRMED→NO_SHOW or COMPLETED→NO_SHOW | Owner, Staff (own) |
 | `GET` | `/api/business/appointments/:id/alternatives` | Same-staff 3 + other-staff ≤3 / Fark etmez 6; same day + 7 days; max window (PA §11.8) | Owner, Staff (own) |
@@ -340,15 +356,23 @@ Staff → **403** on these routes.
 
 ---
 
-## 14. Business user profile / account self-service
+## 14. Business user profile / account self-service — FINAL (out of MVP API)
 
-| Method | Path (proposed) | Purpose | Status |
-| --- | --- | --- | --- |
-| `GET` | `/api/auth/business/session` | Identity + membership (already §3.1) | Covered |
-| `PATCH` | `/api/auth/business/me` | Change display name / password while logged in | **OPEN** — Product Architecture requires password reset flow but does not fully specify logged-in profile/password/email change for business users |
-| Business-user email change | — | — | **OPEN** / likely out of MVP unless added to PA first |
+**No** dedicated business-user profile endpoints in the MVP API surface:
 
-**New endpoint count toward inventory:** 0 FINAL + 1 OPEN candidate (not counted in totals until decided).
+```text
+GET  /api/business/me      — not inventoried
+PATCH /api/business/me     — not inventoried
+GET  /api/auth/business/me  — not inventoried
+PATCH /api/auth/business/me — not inventoried
+```
+
+- Identity/membership for the panel comes from `GET /api/auth/business/session` (§3.1).
+- Password recovery remains `POST /api/auth/business/password-reset/*` (§3.1).
+- Do not mix **Business settings** (`/api/business/settings`) with business-user account profile.
+- Logged-in business-user name/email/password self-service management is **out of MVP API Contract** (not an OPEN item — explicitly excluded).
+
+**Count: 0** additional endpoints.
 
 ---
 
@@ -376,9 +400,11 @@ Staff → **403** on these routes.
 | Business availability (admin) | ❌ | ❌ | ✅ (own) | ✅ |
 | Customer Management | ❌ | ❌ | ❌ (403) | ✅ |
 | Staff / services mutate / hours / closed dates | ❌ | ❌ | ❌ | ✅ |
-| Services/staff **read** for booking UX | ❌ | ❌ | ✅ (recommended) | ✅ |
+| Staff–Service `GET` own / `PUT` (Owner) | ❌ | ❌ | ✅ GET own only | ✅ |
+| Services/staff **catalog read** for booking UX | ❌ | ❌ | ✅ | ✅ |
 | Business settings / activate / deactivate / preview | ❌ | ❌ | ❌ | ✅ |
 | Staff invitation create/revoke | ❌ | ❌ | ❌ | ✅ |
+| Business-user `/me` profile | — | — | — | **N/A (out of MVP)** |
 
 ¹ May hit public URLs while browsing; not a substitute for Business API.  
 ² Manual booking uses Business API (`POST /api/business/appointments`), not public booking.  
@@ -405,32 +431,35 @@ Staff → **403** on these routes.
 
 | Area | Endpoint count | Status | Notes |
 | --- | ---: | --- | --- |
-| Auth (business) | 5 | Draft inventory | |
-| Auth (invitations HTTP) | 5 | Draft inventory | Inspect/accept FINAL at `/api/invitations/:token`; Owner invite **create** is CLI |
-| Auth (customer) | 8 | Draft inventory | Under `/customer/*` |
-| Public booking / manage | 7 | Draft inventory | Manage token: fragment → POST body (FINAL) |
-| Customer account / appointments | 9 | Draft inventory | `/customer/*` prefix FINAL |
-| Business settings / lifecycle | 5 | Draft inventory | Includes public-preview |
-| Services | 6 | Draft inventory | Staff GET access OPEN |
-| Staff | 7 | Draft inventory | + invitations in Business API |
-| Scheduling (hours/TimeOff/closed) | 11 | Draft inventory | |
-| Availability (business) | 1 | Draft inventory | Public availability in Public |
-| Appointments / calendar | 8 | Draft inventory | Single complete/no-show convention |
-| Customers (CM) | 6 | Draft inventory | Owner-only |
-| Dashboard | 1 | Draft inventory | |
-| **Total (proposed inventory)** | **79** | | OPEN candidates not double-counted |
+| Auth (business) | 5 | Inventory | Session + password-reset; no `/me` |
+| Auth (invitations HTTP) | 5 | Inventory | Inspect/accept FINAL at `/api/invitations/:token`; Owner invite **create** is CLI |
+| Auth (customer) | 8 | Inventory | Under `/customer/*` |
+| Public booking / manage | 7 | Inventory | Manage token: fragment → POST body (FINAL) |
+| Customer account / appointments | 9 | Inventory | `/customer/*` prefix FINAL |
+| Business settings / lifecycle | 5 | Inventory | Includes public-preview |
+| Services | 6 | Inventory | Staff read-only GET FINAL |
+| Staff | 8 | Inventory | Includes `GET|PUT .../staff/:id/services` FINAL |
+| Scheduling (hours/TimeOff/closed) | 11 | Inventory | |
+| Availability (business) | 1 | Inventory | Normal rules only; no override preview |
+| Appointments / calendar | 8 | Inventory | `overrideHours` on create/reschedule Owner-only |
+| Customers (CM) | 6 | Inventory | Owner-only |
+| Dashboard | 1 | Inventory | |
+| Business-user `/me` | 0 | Excluded | Out of MVP API |
+| **Total (MVP HTTP inventory)** | **80** | | |
 
 ### OPEN
 
-1. **Staff read access** to `GET /api/business/services` (and staff list shape for Staff role).
-2. **Business availability + override**: whether `overrideHours` preview is a query flag on `GET .../availability` or only applied at `POST .../appointments`.
-3. **Business user logged-in profile/password (and email) change** endpoints — not fully specified in Product Architecture → do not treat as FINAL inventory items until PA or an explicit decision exists.
+**No remaining API inventory OPEN items.**
 
-### Closed in this revision (was OPEN)
+### Closed (inventory decisions)
 
-- Guest manage-token transport → **FINAL** (fragment → frontend → POST `token` body; no query; GET does not consume).
-- Invitation inspect/accept binding → **FINAL** (`GET|POST /api/invitations/:token[/accept]`; token record is SoT).
-- Customer account path prefix → **FINAL** (`/api/public/:slug/customer/*`).
+- Guest manage-token transport → FINAL (fragment → POST `token` body).
+- Invitation inspect/accept → FINAL (`/api/invitations/:token`).
+- Customer path prefix → FINAL (`/api/public/:slug/customer/*`).
+- Staff–Service `GET|PUT /api/business/staff/:id/services` → FINAL (replacement `serviceIds`; no attach/detach).
+- Staff services catalog / staff list read rules → FINAL (Staff read-only catalog; list scoped to self).
+- Owner override preview endpoint → **rejected**; `overrideHours` only on Owner mutations.
+- Business-user `/me` profile endpoints → **excluded** from MVP API (session + password-reset only).
 
 ### Missing capabilities (vs Product Architecture)
 
@@ -446,8 +475,11 @@ Staff → **403** on these routes.
 | Separate `mark-completed` vs `complete` | **Rejected** — single `.../complete` and `.../no-show` |
 | Public booking vs manual booking | **Intentional dual endpoints** (different auth, rules, `source`) |
 | Customer cancel/reschedule vs guest manage cancel/reschedule | **Intentional dual** (session vs manage token) |
-| `PATCH` service `active` + `POST .../activate` | Prefer **explicit activate/deactivate** only; avoid also toggling via ambiguous PATCH — implementers should not expose both styles |
-| Customer CM `POST` vs booking-context customer create | Same resource create allowed under different auth paths is OK; avoid a third “quick-create” alias |
+| `PATCH` service `active` + `POST .../activate` | Prefer **explicit activate/deactivate** only; avoid also toggling via ambiguous PATCH |
+| Customer CM `POST` vs booking-context customer create | Same resource create under different auth paths OK; no third “quick-create” alias |
+| Service attach/detach vs `PUT .../staff/:id/services` | **Rejected** attach/detach — replacement `PUT` only |
+| Availability override-preview endpoint | **Rejected** — override only on Owner mutations |
+| `/api/business/me` profile CRUD | **Excluded** from MVP inventory |
 
 ### Contradictions
 
@@ -461,6 +493,8 @@ Known alignment checks:
 - Dashboard Staff scope server-enforced.
 - CLOSED dates / all-day TimeOff / Luxon TZ semantics preserved at contract responsibility level.
 - Public vs INACTIVE response behavior referenced, not redefined.
+- `overrideHours` mutation-only for Owner; availability GET stays normal rules.
+- Staff–Service managed only via `GET|PUT /api/business/staff/:id/services`.
 
 ---
 
