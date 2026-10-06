@@ -3,7 +3,7 @@ Status: Living document · Last updated: 2026-10-06
 Decision states:
 
 - **FINAL**: locked. Change only by updating this document first.
-- **OPEN**: not decided. Must not be assumed or silently resolved during implementation.
+- **OPEN**: not decided. Must not be assumed or silently resolved during implementation. **This document currently has zero Product Architecture OPEN items** (see §23).
 
 ---
 
@@ -13,9 +13,9 @@ Decision states:
 - Audience: Cursor Agent (implementation), human reviewers, portfolio readers.
 - Usage rules:
   - Sections 3–22 are **FINAL**.
-  - Section 23 is **OPEN**. If a task depends on an open decision, raise it, decide it explicitly, and record the outcome here before implementing.
+  - Section 23 records that **no product/architecture decisions remain open**. Implementation-specific concerns are deferred to technical documents (listed there), not left as Product Architecture OPEN items.
   - Any change to a FINAL decision must be made in this document before it is made in code.
-- This document describes **what the product does** and **which architecture principles are locked**. It is not an API reference, Prisma schema, endpoint catalog, test suite, or deployment runbook.
+- This document describes **what the product does** and **which architecture principles are locked**. It is not an API reference, Prisma schema, endpoint catalog, test suite, deployment runbook, or email copy deck.
 
 ---
 
@@ -176,7 +176,7 @@ Owner authenticated **preview** of the public booking UI is allowed while inacti
 | `name` | required, 1–80, trimmed |
 | `slug` | required, global unique |
 | `timezone` | IANA, validated/canonical |
-| `currency` | ISO 4217, uppercase |
+| `currency` | Active ISO 4217 code, 3-letter uppercase; validated (unknown/invalid rejected); not a fixed TRY/EUR/USD product allow-list |
 | `phone` | nullable, E.164 when set; parse with default country `TR` if no calling code (§9.1) |
 | `email` | nullable, lowercase |
 | `address` | nullable, plain text ≤300 |
@@ -208,7 +208,10 @@ Before first publish, timezone, currency, and slug remain Owner-editable.
 - 2–48 chars; `^[a-z0-9]+(?:-[a-z0-9]+)*$`
 - Turkish transliteration on suggest: ç→c, ğ→g, ı/İ→i, ö→o, ş→s, ü→u
 - Collision → reject (no silent `-2` suffix); alternatives are UX-only suggestions
-- Reserved words: central config list (e.g. admin, api, login, book, app, settings, static, assets, health, internal, support, help, …). Full list OPEN (§23).
+- Reserved words: central, case-insensitive check against the normalized lowercase slug. None of these may be taken by any business:
+
+  `api`, `admin`, `auth`, `login`, `logout`, `signin`, `signup`, `register`, `account`, `dashboard`, `settings`, `calendar`, `customers`, `customer`, `staff`, `services`, `service`, `booking`, `book`, `bookings`, `invite`, `invitation`, `reset`, `verify`, `verification`, `health`, `status`, `assets`, `static`, `favicon`, `robots`, `sitemap`, `manifest`, `webhooks`, `webhook`, `error`, `404`, `500`
+
 - Mutable only while `publishedAt IS NULL`; immutable after. No redirect table in MVP.
 - Manage/token links do not depend on slug.
 
@@ -240,6 +243,19 @@ Deactivation closes **new public booking only**. Remains available: admin dashbo
 - Settings updates: last-write-wins; no Business `version` in MVP.
 - Activate/deactivate: conditional UPDATE on expected `status`; 0 rows → 409.
 - Public booking checks `status = ACTIVE` inside the booking transaction.
+
+### 6.9 Operator offboarding / data retention
+
+- **No** self-service business deletion or offboarding in MVP.
+- Operator-only offboarding:
+  - Set business `INACTIVE` (public booking closed).
+  - Revoke business-user sessions.
+  - Invalidate pending invitations / related tokens as appropriate.
+  - Do **not** delete appointment, customer, or other historical rows.
+  - Do **not** auto-cancel or reschedule existing appointments.
+  - Slug is **never reused**.
+- Hard delete / cascade business deletion is out of scope.
+- No automatic retention/deletion timer in MVP; a future legal/ops retention policy may be defined separately without changing this MVP rule.
 
 ---
 
@@ -344,7 +360,7 @@ Deactivation closes **new public booking only**. Remains available: admin dashbo
 
 ### 10.1 Service
 
-- Fields: name, `durationMinutes`, `priceMinor` (integer minor units), currency (ISO 4217; aligned with business currency at write time), `bufferMinutes`, active/inactive.
+- Fields: name, `durationMinutes`, `priceMinor` (integer minor units), currency (active ISO 4217 code aligned with business currency at write time; unknown codes rejected), `bufferMinutes`, active/inactive.
 - Duration independent of slot interval.
 - Multiple staff may offer a service via StaffService.
 - Inactive: no new bookings; existing CONFIRMED continue.
@@ -361,6 +377,7 @@ Deactivation closes **new public booking only**. Remains available: admin dashbo
 ### 10.3 Money
 
 - Integer minor units everywhere; no floats.
+- Business/service currency: any **active ISO 4217** code (3-letter uppercase); validate and reject unknown/invalid codes. No fixed product allow-list (TRY/EUR/USD/…). Immutable on the business after first publish (§6.3).
 - Format with `Intl.NumberFormat('tr-TR', { style: 'currency', currency })`.
 - Appointment snapshot stores `priceMinor` + `currency` at booking time.
 - No payments in MVP. Emails do not show price in MVP notification content rules (§17) unless later revised in this document.
@@ -375,7 +392,7 @@ Deactivation closes **new public booking only**. Remains available: admin dashbo
 - Containers and DB: `TZ=UTC`.
 - Business timezone: IANA; Node/ICU single tzdata source; no SQL `AT TIME ZONE` for product logic.
 - Display (public, admin, email): always business timezone with label; never browser/server local.
-- One shared time module (library choice OPEN: Luxon vs Temporal).
+- One shared time module implemented with **Luxon** (Temporal is not an MVP dependency). All timezone/DST/local-date conversions go through this module; existing availability, day-boundary, DST, and email display rules are unchanged.
 
 ### 11.2 Working hours, closed dates, and time off
 
@@ -556,7 +573,7 @@ CANCELLED terminal
 
 ### 14.2 Staff filter and layout
 
-- Owner: All staff | single staff. Single calendar (no resource columns). All view: staff name on card + deterministic staff color.
+- Owner: All staff | single staff. Single calendar (no resource columns). All view: staff name on card + **deterministic staff color** from a fixed system palette of **12** color tokens (not Owner-configurable; hex values live in UI/design-system docs). Colors are independent of status colors; color alone never conveys meaning (staff name/text always shown). Assignment is stable (prefer hash of staff id → token); if more than 12 staff, tokens may repeat.
 - Staff: own calendar only; no filter.
 - No calendar search; no service/status filters on calendar.
 
@@ -675,10 +692,11 @@ Answer “Şimdi / bugün ne yapmalıyım?” — not analytics.
 ### 17.4 Content and templates
 
 - Appointment facts from snapshots; branding/contact/timezone from **current** Business; recipient current email (C9 uses token old email).
-- Timezone formatting in shared time module; templates receive ready strings; locale `tr-TR` only in MVP (copy objects separated for future).
+- Timezone formatting in shared Luxon time module; templates receive ready strings; locale `tr-TR` only in MVP (copy objects structured for future locales).
 - React Email; typed props + registry; HTML+text rendered in-app; preview via email dev; no Resend `react` param coupling.
 - Branding: name, logo, primaryColor (CTA + accent + contrast text), contact, booking block. No powered-by, custom CSS/fonts/HTML.
 - From: `noreply@mail.{platform}`; display name = sanitized business name (≤64) for customer/invite emails; platform name for B3/B4. Reply-To: business email when set (customer + staff invite); operator support for owner invite; none for B3/B4.
+- **Exact subject/body wording** is not defined in this document; it is deferred to a dedicated **Email / Notification Content** document. Types, recipients, triggers, branding, and delivery behavior here remain authoritative.
 
 ### 17.5 Provider and tests
 
@@ -798,7 +816,10 @@ UX consistency across Calendar, Customer Management, Dashboard: shared time form
 - Dashboard Redis cache  
 - ICS/calendar attachments; “password changed” notice emails; business-user email verification (invite proves ownership)  
 - Multiple Owners in MVP practice; ownership transfer; multi-business switcher UI  
-- Transactional outbox (known enqueue limitation accepted for MVP; see §17.1)
+- Transactional outbox (known enqueue limitation accepted for MVP; see §17.1)  
+- Self-service business deletion / offboarding (operator-only procedure in §6.9)  
+- Owner-chosen staff calendar colors (fixed 12-token system palette only)  
+- Hard-delete / cascade delete of a business and its history  
 
 ### 22.2 Infrastructure
 
@@ -813,18 +834,13 @@ UX consistency across Calendar, Customer Management, Dashboard: shared time form
 
 ## 23. Remaining open product / architecture decisions
 
-Nothing in this section may be assumed during implementation. Decide explicitly and record the outcome in this document before implementing behavior that depends on it.
+**No remaining product/architecture decisions.**
 
-1. Date/time library choice (Luxon vs Temporal) for the shared time module.  
-2. Complete reserved-slug list (central list required; exhaustive entries not yet frozen).  
-3. Currency allow-list vs any ISO 4217 code.  
-4. Staff calendar color palette.  
-5. Business offboarding / data retention policy (slug remains reserved until that policy exists).  
-6. Exact email template wording/copy (template architecture and branding rules are FINAL; copy text is not).
+All product and architecture choices required to implement the MVP are FINAL in sections 3–22.
 
-Implementation-specific decisions such as exact token/session durations, rate limits (values, store, endpoint list), deployment/VM provider, observability, test framework, repository structure, PostgreSQL/Prisma versions, non-Prisma UUID helper mechanics, frontend/API origin topology, frontend component/state architecture, demo-tenant provisioning/reset mechanics, and email deployment configuration (`EMAIL_FROM_ADDRESS`, platform sending domain, `EMAIL_PLATFORM_NAME`, operator support inbox, provider limiter numbers) are intentionally deferred to the corresponding technical documents. They are not Product Architecture OPEN decisions.
+Implementation-specific concerns (exact token/session durations, rate limits, deployment/VM provider, observability, test framework, repository structure, PostgreSQL/Prisma versions, non-Prisma UUID helper mechanics, frontend/API origin topology, frontend component/state architecture, demo-tenant provisioning/reset mechanics, email deployment configuration, staff-color hex values, and exact email subject/body copy) are deferred to the corresponding technical or content documents. They are not open Product Architecture decisions.
 
-**Do not resurrect** items already finalized elsewhere in this document (including: customer matching, registration/verification, email change, soft-delete, phone default country `TR`, onboarding/CLI, Owner/Staff model, Owner-as-bookable-staff, slot intervals, buffer semantics, business closed dates, all-day TimeOff, Fark etmez workload algorithm, booking reference `BK-XXXXXXXX`, override flag, status transitions, cancellation/reschedule, snapshots, notification/BullMQ architecture, EmailProvider, token architecture shape, calendar/CM/dashboard behavior including unmarked = all past CONFIRMED, branding boundaries, tenant isolation, authentication model, UUID strategy, double-booking constraint, timezone/DST rules, business lifecycle, logo URL-only, i18n = `tr-TR` only for MVP).
+Do not re-open finalized decisions in this document during implementation. If a true product/architecture change is required, update this document first.
 
 ---
 
@@ -856,6 +872,12 @@ Implementation-specific decisions such as exact token/session durations, rate li
 | Phone default country `TR` | Require always-E.164 input | Matches primary market; explicit `+` country codes still win. |
 | Business full-day closed dates | Weekly hours only | Holidays/one-off closures without mutating history. |
 | All-day TimeOff = local midnight→next midnight | Fixed 24h elapsed | Correct under DST; matches calendar-day mental model. |
+| Luxon for MVP date/time module | Temporal | Mature TZ/DST tooling; Temporal not an MVP dependency. |
+| Reserved public/system slug list | Ad-hoc / empty list | Prevents clashes with platform routes; case-insensitive on normalized slug. |
+| Any active ISO 4217 currency | Fixed TRY/EUR/USD allow-list | No artificial product limit; still validate codes; publish immutability unchanged. |
+| Fixed 12-token staff calendar palette | Owner-picked colors | Stable, status-independent accents without design sprawl. |
+| Operator-only offboarding; retain history; no hard delete | Self-service delete / timed purge | Matches INACTIVE + history-retained model; slug never reused. |
+| Exact email copy deferred to content doc | Freeze copy in architecture | Architecture owns types/triggers/branding/delivery; wording iterates separately. |
 
 ---
 
