@@ -177,7 +177,7 @@ Owner authenticated **preview** of the public booking UI is allowed while inacti
 | `slug` | required, global unique |
 | `timezone` | IANA, validated/canonical |
 | `currency` | ISO 4217, uppercase |
-| `phone` | nullable, E.164 when set |
+| `phone` | nullable, E.164 when set; parse with default country `TR` if no calling code (§9.1) |
 | `email` | nullable, lowercase |
 | `address` | nullable, plain text ≤300 |
 | `logoUrl` | nullable, absolute HTTPS ≤2048 |
