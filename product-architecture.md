@@ -285,7 +285,7 @@ Deactivation closes **new public booking only**. Remains available: admin dashbo
 ### 8.3 Guest manage tokens
 
 - High-entropy, purpose-scoped, hashed at rest; appointment-specific.
-- Short-lived (exact TTL OPEN).
+- Short-lived (exact durations deferred to technical documents).
 - Valid after account creation until expiry, cancel, reschedule (new token emailed), appointment no longer manageable, or customer deletion.
 - Token in URL fragment `#token=...`; GET does not consume; frontend POST consumes.
 
@@ -470,7 +470,7 @@ Service → Staff → Date → Time → Customer → Confirm.
 
 - Scheduling: `startsAt`, `endsAt`, `blockedUntil`, `staffId`, `serviceId`, `customerId`, `status`, `version`
 - Cancellation: `cancelledAt` (DB `now()`), `cancelledBy` ∈ {CUSTOMER, STAFF, OWNER} (no user id)
-- Meta: `source`, `overrideHours`, customer note (immutable), snapshots (§13.2), short booking reference (format OPEN)
+- Meta: `source`, `overrideHours`, customer note (immutable), snapshots (§13.2), short booking reference (format OPEN — §23)
 - No business snapshot on appointment; emails/UI branding use current Business at send/view time.
 
 ### 13.2 Snapshots (immutable)
@@ -602,7 +602,7 @@ Answer “Şimdi / bugün ne yapmalıyım?” — not analytics.
 
 - Today: business-local day; all statuses chronological; cancelled muted; past CONFIRMED = İşaretlenmedi; max 100 + `truncated`.
 - Next: nearest future CONFIRMED only.
-- Unmarked: all past CONFIRMED, oldest first, max 20 listed; optional calendar deep-link by local date; not Customer Management.
+- Unmarked: **all** past CONFIRMED (`unmarkedCount` has no age cap in MVP), oldest first, max 20 listed; optional calendar deep-link by local date; not Customer Management.
 - Click rows → appointment drawer.
 
 ### 16.4 Quick actions and empty states
@@ -664,7 +664,7 @@ Answer “Şimdi / bugün ne yapmalıyım?” — not analytics.
 ### 17.6 Token email lifecycle
 
 - Intent row in request transaction; secret minted in worker; hash written if still active; raw secret only in memory/email.
-- Resend rotates secret and renews expiry; automatic retries rotate secret but do not extend expiry beyond policy (exact TTL OPEN).
+- Resend rotates secret and renews expiry; automatic retries rotate secret but do not extend expiry beyond the configured policy (exact durations deferred to technical documents).
 - Manage tokens: multiple may be active; reschedule/cancel/delete revoke appointment’s manage tokens.
 
 ---
@@ -728,8 +728,8 @@ UX consistency across Calendar, Customer Management, Dashboard: shared time form
 - All PKs UUID v7; PG native `uuid`; Prisma `@db.Uuid`.
 - Generated in Prisma/application layer (not PG `uuidv7()`).
 - `createdAt` authoritative; ID order never business logic.
-- Public identifiers separate: slug, short booking reference (format OPEN), secret tokens.
-- Non-Prisma inserts (seeds, raw SQL) must supply UUIDs via the same application helper (exact helper mechanics OPEN).
+- Public identifiers separate: slug, short booking reference (format OPEN — §23), secret tokens.
+- Non-Prisma inserts (seeds, raw SQL) must supply UUIDs via the same application helper (helper mechanics deferred to technical documents).
 
 ### 21.2 Double-booking
 
@@ -756,55 +756,47 @@ UX consistency across Calendar, Customer Management, Dashboard: shared time form
 - Detailed audit log  
 - Health/medical records  
 - Drag-and-drop calendar  
-- SSE / realtime sync (unless significant spare time — default no)  
+- SSE / realtime sync  
 - Customer tags/segments, CRM analytics, marketing consent/preferences  
 - Customer import/export, CSV, bulk actions, merge, duplicate-resolution UI  
 - Customer-level or internal notes beyond immutable booking note  
 - Restore soft-deleted customers  
 - Revenue/conversion/staff-performance analytics, charts, custom dashboard widgets, saved filters, advanced reports  
 - Dashboard Redis cache  
-- ICS/calendar attachments; “password changed” notice emails; business-user email verification (invite proves ownership)
+- ICS/calendar attachments; “password changed” notice emails; business-user email verification (invite proves ownership)  
+- Multiple Owners in MVP practice; ownership transfer; multi-business switcher UI  
+- Transactional outbox (known enqueue limitation accepted for MVP; see §17.1)
 
 ### 22.2 Infrastructure
 
 - Kubernetes, Terraform, Next.js (this sprint)  
 - Database-per-tenant, schema-per-tenant  
-- PostgreSQL RLS in sprint  
+- PostgreSQL RLS (deferred until before the first real client; not part of the sprint)  
 - PostgreSQL-generated UUIDs  
 - Elasticsearch / search appliances  
 - CQRS / read replicas / analytics warehouse / materialized views / event sourcing for MVP reads  
 
 ---
 
-## 23. Remaining open decisions
+## 23. Remaining open product / architecture decisions
 
-Nothing in this section may be assumed during implementation. Decide explicitly and record here first.
+Nothing in this section may be assumed during implementation. Decide explicitly and record the outcome in this document before implementing behavior that depends on it.
 
 1. Exact workload-based “Fark etmez” staff assignment algorithm.  
 2. Exact short booking reference format.  
-3. Exact token TTLs (verification, reset, email-change, invite, manage) and session idle/absolute durations.  
-4. Default phone country for `libphonenumber-js` parsing.  
-5. Business-wide holidays / closed-date model beyond weekly hours.  
-6. All-day TimeOff UI/semantics details.  
-7. Date/time library: Luxon vs Temporal.  
-8. Exact rate-limit values, storage backend, and full endpoint list.  
-9. Deployment/VM provider; logging/observability stack.  
-10. Test framework/tooling; repository structure.  
-11. PostgreSQL version; Prisma version (must support UUID v7 generation).  
-12. Application helper details for non-Prisma UUID inserts (seeds/raw/backfill).  
-13. Frontend/API origin topology (compatible with SameSite=Lax + Origin checks).  
-14. Platform sending domain / Resend / `EMAIL_PLATFORM_NAME` / operator support inbox / limiter numbers (deploy config).  
-15. Complete reserved-slug list (central list required; exhaustive entries not frozen).  
-16. Currency allow-list vs any ISO 4217 code.  
-17. Staff calendar color palette tokens.  
-18. Whether unmarked dashboard count should later cap by age (e.g. 90d); MVP counts all past CONFIRMED.  
-19. Business offboarding / data retention procedure (slug remains reserved meanwhile).  
-20. Demo tenant provisioning and reset behavior details.  
-21. Exact email template copy (structure/architecture FINAL; wording OPEN).  
-22. UI component architecture and frontend state management choices.  
-23. Post-MVP only (do not implement): multiple Owners, ownership transfer, multi-business switcher, RLS enablement, transactional outbox, custom domains.
+3. Default phone country / parsing behavior for `libphonenumber-js` (product-visible normalize/validate rules).  
+4. Business-wide holidays / closed-date model beyond weekly working hours.  
+5. All-day TimeOff semantics.  
+6. Date/time library choice (Luxon vs Temporal) for the shared time module.  
+7. Complete reserved-slug list (central list required; exhaustive entries not yet frozen).  
+8. Currency allow-list vs any ISO 4217 code.  
+9. Staff calendar color palette.  
+10. Business offboarding / data retention policy (slug remains reserved until that policy exists).  
+11. Exact email template wording/copy (template architecture and branding rules are FINAL; copy text is not).
 
-**Do not resurrect** items already finalized elsewhere in this document (including: customer matching, slot intervals, buffer semantics, override flag, status transitions, notification/BullMQ architecture, onboarding/CLI model, Owner-as-staff, customer account/verification/email-change flows, timezone storage/DST rules, reschedule-in-place, calendar/CM/dashboard behavior, logo URL-only, i18n = tr-TR only for MVP emails/UI copy source).
+Implementation-specific decisions such as exact token/session durations, rate limits (values, store, endpoint list), deployment/VM provider, observability, test framework, repository structure, PostgreSQL/Prisma versions, non-Prisma UUID helper mechanics, frontend/API origin topology, frontend component/state architecture, demo-tenant provisioning/reset mechanics, and email deployment configuration (`EMAIL_FROM_ADDRESS`, platform sending domain, `EMAIL_PLATFORM_NAME`, operator support inbox, provider limiter numbers) are intentionally deferred to the corresponding technical documents. They are not Product Architecture OPEN decisions.
+
+**Do not resurrect** items already finalized elsewhere in this document (including: customer matching, registration/verification, email change, soft-delete, onboarding/CLI, Owner/Staff model, Owner-as-bookable-staff, slot intervals, buffer semantics, override flag, status transitions, cancellation/reschedule, snapshots, notification/BullMQ architecture, EmailProvider, token architecture shape, calendar/CM/dashboard behavior including unmarked = all past CONFIRMED, branding boundaries, tenant isolation, authentication model, UUID strategy, double-booking constraint, timezone/DST rules, business lifecycle, logo URL-only, i18n = `tr-TR` only for MVP).
 
 ---
 
