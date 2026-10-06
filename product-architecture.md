@@ -70,8 +70,8 @@ See §22. Do not implement those items in the MVP sprint.
 ### 4.1 Owner
 
 - Sees all business data and all appointments.
-- Manages business settings, branding, activation/deactivation, services, staff, schedules, time off, customers.
-- Manual booking for any staff; may override hours/time-off/closed-day rules with `overrideHours`.
+- Manages business settings, branding, activation/deactivation, services, staff, schedules, time off, **business closed dates**, customers.
+- Manual booking for any staff; may override hours/time-off/closed-day (including business closed dates) rules with `overrideHours`.
 - Cancel/reschedule any CONFIRMED appointment before start; Complete / No-show at or after start; correct COMPLETED ↔ NO_SHOW.
 - Customer Management full access.
 - Dashboard: business-wide.
@@ -302,6 +302,7 @@ Deactivation closes **new public booking only**. Remains available: admin dashbo
 
 - Business-scoped: name, email / `normalizedEmail`, phone (E.164 searchable), soft-delete.
 - Matching: **normalized email only** (trim + lowercase; no dot or `+tag` stripping), within business, non-deleted only. Deterministic. Phone never auto-links. Email wins over phone; no merge.
+- Phone parsing (`libphonenumber-js`): if the input has no country calling code, default country is **`TR`**. If a country code is present (`+49`, `+44`, `+1`, etc.), that code is authoritative. Store searchable E.164 when set.
 - Partial unique index on `(businessId, normalizedEmail)` excluding soft-deleted and nulls (migration SQL; Prisma cannot express; upsert cannot target it).
 - Unauthenticated/guest bookings never overwrite existing customer fields.
 - Soft-deleted customers never revived; same email later creates a **new** Customer.
@@ -352,10 +353,10 @@ Deactivation closes **new public booking only**. Remains available: admin dashbo
 ### 10.2 Staff
 
 - Belongs to business; optional link to `BusinessMember` via composite FK including `businessId`.
-- Active/inactive; working hours; time off (Owner-managed).
+- Active/inactive; working hours; time off including all-day time off (Owner-managed; semantics §11.2).
 - Display name used for public UI and booking snapshots.
 - Staff–service unlink: allowed even with future CONFIRMED for that pair; appointments preserved; new bookings cannot use the pair.
-- Working-hours / time-off changes: never auto-cancel appointments; only affect future availability.
+- Working-hours / time-off / closed-date changes: never auto-cancel appointments; only affect future availability.
 
 ### 10.3 Money
 
@@ -376,14 +377,34 @@ Deactivation closes **new public booking only**. Remains available: admin dashbo
 - Display (public, admin, email): always business timezone with label; never browser/server local.
 - One shared time module (library choice OPEN: Luxon vs Temporal).
 
-### 11.2 Working hours and time off
+### 11.2 Working hours, closed dates, and time off
 
 - Working hours: local wall-clock; ISO `dayOfWeek` 1–7; integer start/end minutes, end exclusive; multiples of 5; `0 ≤ start < end ≤ 1440`. No `@db.Time`; no overnight intervals.
 - Same-day intervals may touch, not overlap; engine fetch → validate → sort → merge → calculate (merge is in-memory only).
-- Time off: stored as instants.
-- Conversion order: TZ → local date → that day’s local rules → local candidates → UTC → all checks in UTC.
+- **Business closed dates (full-day):**
+  - Owner-managed; keyed by business + local calendar date in the business timezone; unique per `(businessId, localDate)`.
+  - Closure is the full local day.
+  - Public availability produces **no slots** that day; new public bookings are blocked.
+  - New manual bookings are blocked under normal rules (Owner may still use `overrideHours` as with other closed-day overrides — §11.7).
+  - Existing appointments are **not** auto-cancelled or mutated; their statuses are unchanged; reminders continue.
+- **Staff time off:** stored as instants (half-open ranges in UTC after conversion).
+  - **All-day TimeOff:** a business-local `YYYY-MM-DD` means `[local 00:00 that day, local 00:00 next day)` in the business timezone — **not** “24 elapsed hours”.
+  - All-day TimeOff closes that staff’s entire availability for that local day.
+  - Adding/changing TimeOff never auto-cancels or mutates existing appointments.
+- Conversion order: TZ → local date → that day’s local rules (hours − closed date − time off) → local candidates → UTC → all checks in UTC.
 - Durations: real elapsed minutes.
 - API dates: `YYYY-MM-DD` business-local; booking sends UTC instant; server verifies instant is a generated slot (public path).
+
+Conceptual availability:
+
+```text
+business hours
+∩ staff hours
+− business closed dates
+− staff time off
+− existing blocking appointments
+− required buffer
+```
 
 ### 11.3 Slot grid
 
@@ -419,15 +440,18 @@ Deactivation closes **new public booking only**. Remains available: admin dashbo
 
 ### 11.7 Manual / Owner override
 
-- Staff path: must follow availability rules.
-- Owner: may override closed days, out-of-hours, time off with explicit flag; honored only for OWNER.
+- Staff path: must follow availability rules (including business closed dates and time off).
+- Owner: may override weekly closed days, **business closed dates**, out-of-hours, and time off with explicit flag; honored only for OWNER.
 - Never override: past time, overlaps, inactive staff/service, staff not offering service.
 - Persisted as `Appointment.overrideHours` boolean (default false).
 
 ### 11.8 Staff selection and alternatives
 
 - Specific staff: that staff’s availability.
-- “Fark etmez / İlk uygun”: eligible available staff; **workload-based** assignment; **exact algorithm OPEN** (§23).
+- **“Fark etmez / İlk uygun çalışan”** — among staff who are eligible for the service and available for the chosen slot, select by:
+  1. Lowest total **CONFIRMED** appointment **duration** (sum of snapshot durations / `endsAt − startsAt` of CONFIRMED rows) over the next **7 business-local calendar days**. `CANCELLED` appointments are excluded from workload; other non-CONFIRMED statuses are excluded.
+  2. If tied: staff whose next upcoming **CONFIRMED** appointment **ends earliest** (smallest next `endsAt`). Staff with no upcoming CONFIRMED appointment win this step over staff who have one.
+  3. If still tied: Staff primary-key UUID ascending (stable, deterministic).
 - Alternatives on conflict/nearby:
   - Specific staff: 3 nearest same staff + up to 3 other staff (separate group).
   - Fark etmez: 6 nearest without staff names.
@@ -470,7 +494,7 @@ Service → Staff → Date → Time → Customer → Confirm.
 
 - Scheduling: `startsAt`, `endsAt`, `blockedUntil`, `staffId`, `serviceId`, `customerId`, `status`, `version`
 - Cancellation: `cancelledAt` (DB `now()`), `cancelledBy` ∈ {CUSTOMER, STAFF, OWNER} (no user id)
-- Meta: `source`, `overrideHours`, customer note (immutable), snapshots (§13.2), short booking reference (format OPEN — §23)
+- Meta: `source`, `overrideHours`, customer note (immutable), snapshots (§13.2), booking reference `BK-XXXXXXXX` (§21.1)
 - No business snapshot on appointment; emails/UI branding use current Business at send/view time.
 
 ### 13.2 Snapshots (immutable)
@@ -728,7 +752,16 @@ UX consistency across Calendar, Customer Management, Dashboard: shared time form
 - All PKs UUID v7; PG native `uuid`; Prisma `@db.Uuid`.
 - Generated in Prisma/application layer (not PG `uuidv7()`).
 - `createdAt` authoritative; ID order never business logic.
-- Public identifiers separate: slug, short booking reference (format OPEN — §23), secret tokens.
+- Public identifiers separate from primary keys:
+  - Business slug
+  - **Booking reference** (Appointment): business-scoped human-readable public reference `BK-XXXXXXXX`
+    - Literal prefix `BK-`
+    - 8 characters after the prefix
+    - Uppercase **Crockford Base32** (ambiguous characters `I`, `L`, `O`, `U` excluded)
+    - Unique per business (`businessId` + reference); **not** the primary key
+    - Safe for customer communication / support
+    - Generation helper details deferred to Data Model / API docs
+  - High-entropy secret tokens (manage/guest, etc.)
 - Non-Prisma inserts (seeds, raw SQL) must supply UUIDs via the same application helper (helper mechanics deferred to technical documents).
 
 ### 21.2 Double-booking
@@ -782,21 +815,16 @@ UX consistency across Calendar, Customer Management, Dashboard: shared time form
 
 Nothing in this section may be assumed during implementation. Decide explicitly and record the outcome in this document before implementing behavior that depends on it.
 
-1. Exact workload-based “Fark etmez” staff assignment algorithm.  
-2. Exact short booking reference format.  
-3. Default phone country / parsing behavior for `libphonenumber-js` (product-visible normalize/validate rules).  
-4. Business-wide holidays / closed-date model beyond weekly working hours.  
-5. All-day TimeOff semantics.  
-6. Date/time library choice (Luxon vs Temporal) for the shared time module.  
-7. Complete reserved-slug list (central list required; exhaustive entries not yet frozen).  
-8. Currency allow-list vs any ISO 4217 code.  
-9. Staff calendar color palette.  
-10. Business offboarding / data retention policy (slug remains reserved until that policy exists).  
-11. Exact email template wording/copy (template architecture and branding rules are FINAL; copy text is not).
+1. Date/time library choice (Luxon vs Temporal) for the shared time module.  
+2. Complete reserved-slug list (central list required; exhaustive entries not yet frozen).  
+3. Currency allow-list vs any ISO 4217 code.  
+4. Staff calendar color palette.  
+5. Business offboarding / data retention policy (slug remains reserved until that policy exists).  
+6. Exact email template wording/copy (template architecture and branding rules are FINAL; copy text is not).
 
 Implementation-specific decisions such as exact token/session durations, rate limits (values, store, endpoint list), deployment/VM provider, observability, test framework, repository structure, PostgreSQL/Prisma versions, non-Prisma UUID helper mechanics, frontend/API origin topology, frontend component/state architecture, demo-tenant provisioning/reset mechanics, and email deployment configuration (`EMAIL_FROM_ADDRESS`, platform sending domain, `EMAIL_PLATFORM_NAME`, operator support inbox, provider limiter numbers) are intentionally deferred to the corresponding technical documents. They are not Product Architecture OPEN decisions.
 
-**Do not resurrect** items already finalized elsewhere in this document (including: customer matching, registration/verification, email change, soft-delete, onboarding/CLI, Owner/Staff model, Owner-as-bookable-staff, slot intervals, buffer semantics, override flag, status transitions, cancellation/reschedule, snapshots, notification/BullMQ architecture, EmailProvider, token architecture shape, calendar/CM/dashboard behavior including unmarked = all past CONFIRMED, branding boundaries, tenant isolation, authentication model, UUID strategy, double-booking constraint, timezone/DST rules, business lifecycle, logo URL-only, i18n = `tr-TR` only for MVP).
+**Do not resurrect** items already finalized elsewhere in this document (including: customer matching, registration/verification, email change, soft-delete, phone default country `TR`, onboarding/CLI, Owner/Staff model, Owner-as-bookable-staff, slot intervals, buffer semantics, business closed dates, all-day TimeOff, Fark etmez workload algorithm, booking reference `BK-XXXXXXXX`, override flag, status transitions, cancellation/reschedule, snapshots, notification/BullMQ architecture, EmailProvider, token architecture shape, calendar/CM/dashboard behavior including unmarked = all past CONFIRMED, branding boundaries, tenant isolation, authentication model, UUID strategy, double-booking constraint, timezone/DST rules, business lifecycle, logo URL-only, i18n = `tr-TR` only for MVP).
 
 ---
 
@@ -823,6 +851,11 @@ Implementation-specific decisions such as exact token/session durations, rate li
 | Calendar Day+Week, no Month/DnD/SSE | Full calendar suite | Ops need day/week; complexity budget. |
 | CM Owner-only; Dashboard thin ops | Staff CRM; analytics widgets | Matches roles; avoids SaaS dashboard clutter. |
 | React + Vite + Express | Next.js | Team velocity and reviewability in sprint. |
+| Fark etmez: 7-day CONFIRMED duration workload + earliest next end + UUID | Random / round-robin only | Deterministic, fair load, easy to test. |
+| Booking ref `BK-` + Crockford Base32 | UUID / numeric sequence | Human-readable, non-ambiguous, business-scoped, not a PK. |
+| Phone default country `TR` | Require always-E.164 input | Matches primary market; explicit `+` country codes still win. |
+| Business full-day closed dates | Weekly hours only | Holidays/one-off closures without mutating history. |
+| All-day TimeOff = local midnight→next midnight | Fixed 24h elapsed | Correct under DST; matches calendar-day mental model. |
 
 ---
 
