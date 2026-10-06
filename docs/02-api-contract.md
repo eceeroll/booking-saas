@@ -5,7 +5,7 @@
 **This phase:** endpoint inventory and API surface boundaries only.  
 **Not in this phase:** detailed request/response schemas, field validation tables, HTTP status catalogs, success/error envelopes.
 
-Suggested naming below is a **convention proposal**. Items marked **OPEN** need an explicit naming/boundary decision before schema work.
+Path conventions below are **inventory proposals** unless marked **FINAL**. Items marked **OPEN** still need an explicit decision before schema work.
 
 ---
 
@@ -14,7 +14,15 @@ Suggested naming below is a **convention proposal**. Items marked **OPEN** need 
 - Product Architecture remains the product/architecture source of truth.
 - This inventory must not invent capabilities absent from Product Architecture.
 - Operator CLI (business provision, Owner invite send, offboarding) is **out of HTTP API scope** unless noted.
-- Exact guest manage-token transport (URL fragment vs body vs query) is **not finalized here**; Product Architecture requires high-entropy hashed tokens and fragment-oriented delivery for email links. Request binding details → later contract phase / Validation doc.
+
+### Guest manage-token transport — FINAL
+
+- High-entropy, single-purpose, expiry-checked manage tokens; stored **hashed** at rest (PA).
+- Email/manage links carry the raw token in the URL **fragment** only (never query string), e.g. `/book/:slug/manage#token=...`.
+- Frontend reads the fragment and sends the token to the API in the **JSON POST body** field `token`.
+- Token is **not** accepted via query string; GET must not consume the token.
+- Cancel/reschedule (and other manage-token operations) remain **POST** mutations (or POST reads that carry `token` in the body so the secret is never logged as a URL).
+- Exact TTLs remain deferred (technical/security config), not redefined here.
 
 ---
 
@@ -31,16 +39,17 @@ Suggested naming below is a **convention proposal**. Items marked **OPEN** need 
 | Concern | Surface |
 | --- | --- |
 | Business user login/logout/session/password-reset | **Auth (business realm)** under `/api/auth/business/*` |
-| BusinessInvitation inspect/accept (Owner + Staff) | **Auth (invitation)** under `/api/auth/invitations/*` (unauthenticated token holder) |
+| BusinessInvitation inspect/accept (Owner + Staff) | **`/api/invitations/:token`** (unauthenticated token holder) — **FINAL** |
 | Staff invitation create/revoke | **Business API** Owner-only |
-| Customer register/verify/login/logout/session/password-reset | **Customer auth** under `/api/public/:slug/auth/*` (tenant via slug) |
-| Customer profile / own appointments | **Customer API** under `/api/public/:slug/account/*` (or `/api/public/:slug/me/*` — naming OPEN) |
+| Customer register/verify/login/logout/session/password-reset + account/appointments | **Customer API** under `/api/public/:slug/customer/*` — **FINAL** |
 
 Suggested top-level prefixes:
 
 ```text
-/api/auth/*                 — business realm + invitation accept
-/api/public/:slug/*         — public booking + customer realm (slug-tenant)
+/api/auth/business/*        — business realm auth
+/api/invitations/:token     — invitation inspect/accept (FINAL)
+/api/public/:slug/*          — public booking + guest manage
+/api/public/:slug/customer/* — customer realm (FINAL; business-scoped)
 /api/business/*             — Owner/Staff panel
 ```
 
@@ -72,34 +81,49 @@ Suggested top-level prefixes:
 
 **Count: 5**
 
-### 3.2 BusinessInvitation (Owner + Staff; same model)
+### 3.2 BusinessInvitation (Owner + Staff; same model) — inspect/accept FINAL
 
 Owner invitations are **created by operator CLI**, not by Business API. Staff invitations are created by Owner via Business API. Both use `BusinessInvitation`.
 
-| Method | Path (proposed) | Purpose | Auth |
+**Inspect / accept binding — FINAL:**
+
+```text
+GET  /api/invitations/:token
+POST /api/invitations/:token/accept
+```
+
+| Method | Path | Purpose | Auth |
 | --- | --- | --- | --- |
-| `GET` | `/api/auth/invitations/:invitationPublicId` | Inspect invite (business name, role, email hint, expiry) without leaking secrets | Token/knowledge of id — **OPEN:** path vs token-only lookup |
-| `POST` | `/api/auth/invitations/accept` | Accept invite; create User/Member/(Staff link); set password; rotate session | Invitation token in body (**OPEN:** exact token field binding) |
+| `GET` | `/api/invitations/:token` | Inspect: minimum UI info (e.g. business name, invited role); validity/expiry. No secrets beyond what UI needs | Raw token in path (high-entropy); lookup via hash |
+| `POST` | `/api/invitations/:token/accept` | Accept: re-validate token; consume invitation; create User; create BusinessMember; if Staff invite, bind Staff↔Member; set password; create rotated session — all transactional | Token in path; password (etc.) in body |
 | `POST` | `/api/business/invitations` | Create/re-issue **Staff** invitation (invalidates previous) | Owner |
 | `POST` | `/api/business/invitations/:id/revoke` | Revoke pending invitation | Owner |
 | `GET` | `/api/business/invitations` | List pending invitations (ops UX) | Owner |
 
+Rules (FINAL):
+
+- Token is high-entropy, stored hashed, single-use, expiry-checked.
+- Invitation row is bound to business, email, role (and staff when applicable); **token record is source of truth**.
+- Client-supplied `businessId` / email / role are **not** trusted for invitation binding.
+- GET does not consume the invitation.
+- Accept re-validates server-side and follows Product Architecture Owner/Staff invitation rules.
+
 **Count: 5** (CLI Owner-invite send is not an HTTP endpoint)
 
-### 3.3 Customer (business-scoped)
+### 3.3 Customer (business-scoped) — path prefix FINAL
 
-All paths are slug-tenanted. Login identity = `(businessId, normalizedEmail)` among non-deleted customers.
+All customer-realm paths live under **`/api/public/:slug/customer/*`** (FINAL). Login identity = `(businessId, normalizedEmail)` among non-deleted customers. Session must match slug-resolved business; mismatch → 404. Accounts are not global.
 
-| Method | Path (proposed) | Purpose | Auth |
+| Method | Path | Purpose | Auth |
 | --- | --- | --- | --- |
-| `POST` | `/api/public/:slug/auth/register` | Start registration (pending token; no Customer/Account yet); uniform response | Public |
-| `POST` | `/api/public/:slug/auth/verify-email` | Complete verification; attach/create Customer + CustomerAccount; session | Token |
-| `POST` | `/api/public/:slug/auth/verification/resend` | Resend verification (rotate token) | Public (rate-limited) |
-| `POST` | `/api/public/:slug/auth/login` | Customer login; rotate session | Public |
-| `POST` | `/api/public/:slug/auth/logout` | Destroy customer session | Customer session |
-| `GET` | `/api/public/:slug/auth/session` | Current customer account summary | Customer session |
-| `POST` | `/api/public/:slug/auth/password-reset/request` | Uniform response | Public |
-| `POST` | `/api/public/:slug/auth/password-reset/confirm` | Consume token; revoke sessions | Token |
+| `POST` | `/api/public/:slug/customer/register` | Start registration (pending token; no Customer/Account yet); uniform response | Public |
+| `POST` | `/api/public/:slug/customer/verify-email` | Complete verification; attach/create Customer + CustomerAccount; session | Token |
+| `POST` | `/api/public/:slug/customer/verification/resend` | Resend verification (rotate token) | Public (rate-limited) |
+| `POST` | `/api/public/:slug/customer/login` | Customer login; rotate session | Public |
+| `POST` | `/api/public/:slug/customer/logout` | Destroy customer session | Customer session |
+| `GET` | `/api/public/:slug/customer/session` | Current customer account summary | Customer session |
+| `POST` | `/api/public/:slug/customer/password-reset/request` | Uniform response | Public |
+| `POST` | `/api/public/:slug/customer/password-reset/confirm` | Consume token; revoke sessions | Token |
 
 **Count: 8**
 
@@ -109,17 +133,27 @@ All paths are slug-tenanted. Login identity = `(businessId, normalizedEmail)` am
 
 Guest booking requires no session. Customer session may be present; booking still uses Public booking rules when created on this surface (`source = PUBLIC`).
 
-| Method | Path (proposed) | Purpose | Auth |
+| Method | Path | Purpose | Auth |
 | --- | --- | --- | --- |
 | `GET` | `/api/public/:slug` | Public business profile (ACTIVE full; published+INACTIVE limited message; unpublished/unknown → 404) | Public |
 | `GET` | `/api/public/:slug/availability` | Server-generated available slots only | Public |
 | `POST` | `/api/public/:slug/appointments` | Create public booking (`CONFIRMED`); guest or logged-in customer | Public (+ optional Customer session) |
-| `GET` | `/api/public/:slug/manage/appointments/:appointmentId` | Guest manage view for one appointment | Manage token (**transport OPEN**) |
-| `POST` | `/api/public/:slug/manage/appointments/:appointmentId/cancel` | Guest cancel | Manage token |
-| `POST` | `/api/public/:slug/manage/appointments/:appointmentId/reschedule` | Guest reschedule (grid + notices) | Manage token |
-| `GET` | `/api/public/:slug/manage/appointments/:appointmentId/alternatives` | Nearby alternatives after conflict / for reschedule UX | Manage token |
+| `POST` | `/api/public/:slug/appointments/:id/manage` | Load guest manage context/detail for one appointment | Body `{ "token" }` — FINAL transport |
+| `POST` | `/api/public/:slug/appointments/:id/cancel` | Guest cancel | Body `{ "token" }` |
+| `POST` | `/api/public/:slug/appointments/:id/reschedule` | Guest reschedule (grid + notices) | Body `{ "token", ... }` |
+| `POST` | `/api/public/:slug/appointments/:id/alternatives` | Nearby alternatives after conflict / for reschedule UX | Body `{ "token", ... }` |
 
 **Count: 7**
+
+Guest manage examples (FINAL transport):
+
+```text
+POST /api/public/:slug/appointments/:id/cancel
+{ "token": "..." }
+
+POST /api/public/:slug/appointments/:id/reschedule
+{ "token": "...", /* new startsAt / staff selection, etc. — schema later */ }
+```
 
 ### Availability contract responsibilities (no schema yet)
 
@@ -134,23 +168,25 @@ Guest booking requires no session. Customer session may be present; booking stil
 | --- | --- | --- |
 | Public profile / availability / create booking | Yes | Yes (same public booking endpoints; account link via session when present) |
 | Appointment history / profile edit / email change | No | Customer API |
-| Guest manage cancel/reschedule | Manage token | Prefer account appointment mutations; manage token remains valid per PA |
+| Guest manage cancel/reschedule | Manage token in POST body (FINAL) | Prefer customer appointment mutations when logged in; manage token remains valid per PA |
 
 ---
 
 ## 5. Customer account & appointments
 
-| Method | Path (proposed) | Purpose | Auth |
+Prefix **`/api/public/:slug/customer/*`** (FINAL). Same email may exist as independent accounts on different businesses.
+
+| Method | Path | Purpose | Auth |
 | --- | --- | --- | --- |
-| `GET` | `/api/public/:slug/account` | Profile: name, phone, email, account status | Customer |
-| `PATCH` | `/api/public/:slug/account` | Update name/phone only | Customer |
-| `POST` | `/api/public/:slug/account/email-change/request` | Start email change (verify new; notice old) | Customer |
-| `POST` | `/api/public/:slug/account/email-change/confirm` | Confirm new email; revoke other sessions; rotate | Token + Customer |
-| `GET` | `/api/public/:slug/account/appointments` | Own appointments list | Customer |
-| `GET` | `/api/public/:slug/account/appointments/:id` | Own appointment detail | Customer |
-| `POST` | `/api/public/:slug/account/appointments/:id/cancel` | Cancel own (notice rules) | Customer |
-| `POST` | `/api/public/:slug/account/appointments/:id/reschedule` | Reschedule own (grid + window/notice) | Customer |
-| `GET` | `/api/public/:slug/account/appointments/:id/alternatives` | Alternatives for customer reschedule / conflict | Customer |
+| `GET` | `/api/public/:slug/customer` | Profile: name, phone, email, account status | Customer |
+| `PATCH` | `/api/public/:slug/customer` | Update name/phone only | Customer |
+| `POST` | `/api/public/:slug/customer/email-change/request` | Start email change (verify new; notice old) | Customer |
+| `POST` | `/api/public/:slug/customer/email-change/confirm` | Confirm new email; revoke other sessions; rotate | Token (+ session rules per PA) |
+| `GET` | `/api/public/:slug/customer/appointments` | Own appointments list | Customer |
+| `GET` | `/api/public/:slug/customer/appointments/:id` | Own appointment detail | Customer |
+| `POST` | `/api/public/:slug/customer/appointments/:id/cancel` | Cancel own (notice rules) | Customer |
+| `POST` | `/api/public/:slug/customer/appointments/:id/reschedule` | Reschedule own (grid + window/notice) | Customer |
+| `GET` | `/api/public/:slug/customer/appointments/:id/alternatives` | Alternatives for customer reschedule / conflict | Customer |
 
 **Count: 9**
 
@@ -370,13 +406,13 @@ Staff → **403** on these routes.
 | Area | Endpoint count | Status | Notes |
 | --- | ---: | --- | --- |
 | Auth (business) | 5 | Draft inventory | |
-| Auth (invitations HTTP) | 5 | Draft inventory | Owner invite **create** is CLI |
-| Auth (customer) | 8 | Draft inventory | Includes resend verification |
-| Public booking / manage | 7 | Draft inventory | Token transport OPEN |
-| Customer account / appointments | 9 | Draft inventory | |
+| Auth (invitations HTTP) | 5 | Draft inventory | Inspect/accept FINAL at `/api/invitations/:token`; Owner invite **create** is CLI |
+| Auth (customer) | 8 | Draft inventory | Under `/customer/*` |
+| Public booking / manage | 7 | Draft inventory | Manage token: fragment → POST body (FINAL) |
+| Customer account / appointments | 9 | Draft inventory | `/customer/*` prefix FINAL |
 | Business settings / lifecycle | 5 | Draft inventory | Includes public-preview |
 | Services | 6 | Draft inventory | Staff GET access OPEN |
-| Staff | 7 | Draft inventory | + invitations in Auth/Business |
+| Staff | 7 | Draft inventory | + invitations in Business API |
 | Scheduling (hours/TimeOff/closed) | 11 | Draft inventory | |
 | Availability (business) | 1 | Draft inventory | Public availability in Public |
 | Appointments / calendar | 8 | Draft inventory | Single complete/no-show convention |
@@ -386,13 +422,15 @@ Staff → **403** on these routes.
 
 ### OPEN
 
-1. **Guest manage-token transport** for manage endpoints (fragment is for email links; how API receives the secret — header vs body — not FINAL).
-2. **Invitation inspect path** (`:invitationPublicId` vs opaque token-only POST inspect).
-3. **Invitation accept token binding** (body field naming only; product rules FINAL).
-4. **Customer account path prefix**: `/account` vs `/me` vs `/customer`.
-5. **Staff read access** to `GET /api/business/services` and staff list shape for Staff role.
-6. **Business availability + override**: whether `overrideHours` preview is a query flag on `GET .../availability` or only applied at `POST .../appointments`.
-7. **Business user logged-in profile/password (and email) change** endpoints — not fully specified in Product Architecture → do not treat as FINAL inventory items until PA or an explicit decision exists.
+1. **Staff read access** to `GET /api/business/services` (and staff list shape for Staff role).
+2. **Business availability + override**: whether `overrideHours` preview is a query flag on `GET .../availability` or only applied at `POST .../appointments`.
+3. **Business user logged-in profile/password (and email) change** endpoints — not fully specified in Product Architecture → do not treat as FINAL inventory items until PA or an explicit decision exists.
+
+### Closed in this revision (was OPEN)
+
+- Guest manage-token transport → **FINAL** (fragment → frontend → POST `token` body; no query; GET does not consume).
+- Invitation inspect/accept binding → **FINAL** (`GET|POST /api/invitations/:token[/accept]`; token record is SoT).
+- Customer account path prefix → **FINAL** (`/api/public/:slug/customer/*`).
 
 ### Missing capabilities (vs Product Architecture)
 
