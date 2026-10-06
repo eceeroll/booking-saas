@@ -382,7 +382,7 @@ Staff → **403** on these routes.
 
 ¹ May hit public URLs while browsing; not a substitute for Business API.  
 ² Manual booking uses Business API (`POST /api/business/appointments`), not public booking.  
-³ Prefer account appointments; manage token still valid per PA.
+³ Prefer customer-session appointments; manage token remains valid per PA (fragment → POST body).
 
 ---
 
