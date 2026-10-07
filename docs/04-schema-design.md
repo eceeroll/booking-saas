@@ -141,14 +141,25 @@ Entities will be designed in this order (field-level work in later revisions):
 
 ## 6. Open schema decisions
 
-Carried forward from [`03-data-model.md`](./03-data-model.md) §14 — **no new OPENs invented**:
+### 6.1 Architecture-level OPENs
+
+These remain unresolved at the **schema-architecture** layer (carried from Data Model). Do **not** invent new ones. Do **not** prematurely decide them in this skeleton:
 
 1. **AuthToken physical model** — generic purpose-scoped table vs purpose-specific tables for customer password reset, customer email-change, business password reset (and optionally registration verify secret if not embedded on `CustomerVerificationIntent`). `CustomerVerificationIntent` remains concrete either way.  
-2. **Exact DB indexes** beyond known uniques / exclusion constraint — deferred to detailed schema / implementation.  
-3. **Exact FK on-delete behavior** (RESTRICT vs CASCADE vs SET NULL) — deferred; must preserve soft-delete and history rules.  
-4. **NotificationDelivery** precise column constraints (`recipient`, `skipReason`, `lastError`, lengths, etc.) — deferred to detailed schema.
+2. **Exact DB indexes** beyond known uniques / exclusion constraint — deferred until indexes are chosen during/after entity design and implementation planning.  
+3. **Exact FK on-delete behavior** (RESTRICT vs CASCADE vs SET NULL) — deferred; must preserve soft-delete and history rules when decided.
 
-**Schema OPEN count:** **4**
+**Architecture-level Schema OPEN count:** **3**
+
+### 6.2 Field-level decisions (not architecture OPENs)
+
+Ordinary per-entity column details are **intentionally deferred** to the entity-by-entity schema pass. They are **not** tracked as architecture-level OPENs. Examples:
+
+- nullability, lengths, and exact column names for `NotificationDelivery` fields such as `recipient`, `skipReason`, `lastError`  
+  (`NotificationDelivery.businessId` is already **FINAL** and **required**)  
+- other entities’ field matrices, check constraints on individual columns, Prisma attribute spelling  
+
+Those are resolved when each entity section is designed—not held as separate OPEN items in this skeleton.
 
 ---
 
@@ -158,6 +169,7 @@ Carried forward from [`03-data-model.md`](./03-data-model.md) §14 — **no new 
 - Prisma models / `@db` attributes  
 - Migration SQL / exclusion constraint DDL text  
 - Seed data  
+- Premature resolution of the three architecture-level OPENs in §6.1  
 
 Those belong in subsequent schema-design passes using the review order above.
 
@@ -170,7 +182,7 @@ Those belong in subsequent schema-design passes using the review order above.
 | Enum inventory rows | **13** |
 | Concrete entities | **19** |
 | Logical abstractions | **1** (AuthToken) |
-| Schema OPEN count | **4** |
+| Architecture-level Schema OPEN count | **3** |
 | Missing entity vs Data Model | **None** |
 | Contradiction vs PA / API / Data Model | **None** |
 
