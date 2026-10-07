@@ -127,7 +127,7 @@ Matching: normalized email only; phone never auto-links.
 | Concept | Notes |
 | --- | --- |
 | `customerId` | 1:1 |
-| `businessId` | Denormalized tenant for isolation/queries (tenant-aware) |
+| `businessId` | **Stored (FINAL)** — tenant-scoped login/session lookups; enables tenant-aware FKs such as `(businessId, customerId)`; reduces cross-tenant relation risk |
 | Password hash | Argon2id |
 | `verifiedAt`, status | Active/disabled |
 | No separate email | Login email lives on `Customer` |
@@ -143,6 +143,27 @@ Matching: normalized email only; phone never auto-links.
 | Expiry / rotation | Same security principles as business sessions |
 
 **Realm split (FINAL):** `BusinessSession` ≠ `CustomerSession`; different cookies; logging into another business’s customer area replaces the single customer cookie (PA).
+
+### 2.9 CustomerVerificationIntent
+
+**Purpose:** Persistent pending **customer registration** before any `Customer` / `CustomerAccount` exists.
+
+Product Architecture FINAL: register collects email + password + name + phone; nothing is created until verification succeeds; expiry/failure leaves no Customer/Account; re-registration with the same email invalidates the previous pending intent.
+
+| Concept | Notes |
+| --- | --- |
+| `businessId` | Tenant |
+| `normalizedEmail` | Pending login identity within business |
+| Pending profile | Pending name, pending phone |
+| Hashed password | Argon2id of chosen password (never raw) |
+| Verification secret | Token/hash association (same-row or linked AuthToken — schema choice) |
+| Expiry | Exact TTL deferred |
+| State | Pending / consumed / revoked / superseded |
+| Timestamps | `createdAt`, `updatedAt` |
+
+**Not** FK to `CustomerAccount` (account is created only after successful verification). On verify: one transaction finds-or-creates active Customer by normalized email (existing Customer field values win) then creates `CustomerAccount`.
+
+This entity is **independent** of the AuthToken physical-table OPEN (§7).
 
 ---
 
@@ -181,12 +202,18 @@ Same shape as business hours, scoped by `businessId` + `staffId`.
 
 ### 3.5 StaffTimeOff
 
+**Purpose:** Business-local **full-day** staff availability exclusion (not an arbitrary free-form datetime range in the product model).
+
 | Concept | Notes |
 | --- | --- |
 | `businessId`, `staffId` | Tenant-aware |
-| Range | Stored as UTC instants (`startsAt`, `endsAt`) half-open |
-| All-day | Local `YYYY-MM-DD` → `[local 00:00, next local 00:00)` (not 24 elapsed hours) |
-| Effect | Blocks future availability only; never auto-cancels appointments |
+| Local date | Business-timezone calendar date (`YYYY-MM-DD`) |
+| Interval meaning | Start = that date’s **local midnight**; end = **next** local midnight |
+| Duration | Elapsed length is **not** required to be 24h (DST 23h/25h days) |
+| Engine | Converts the local-date bounds to a UTC half-open interval for availability |
+| Effect | Closes that staff’s entire availability for that local day; never auto-cancels appointments |
+
+Exact DB column/type representation is deferred to schema (may store local date only, or materialized UTC bounds derived from it).
 
 ### 3.6 BusinessClosedDate
 
@@ -288,27 +315,29 @@ Token API binding: `/api/invitations/:token` (inspect/accept); invitation row is
 
 ---
 
-## 7. Customer / business security intents (tokens)
+## 7. Security flows & AuthToken (logical)
 
-### Domain requirements (FINAL capabilities)
+### 7.1 Subject-separated flows (FINAL mapping)
 
-| Purpose | Realm | Needs |
+| Flow | Persisted subject / entity | Notes |
 | --- | --- | --- |
-| Account verification | Customer | Pending payload may include password hash + name/phone; no Customer/Account until verify |
-| Customer password reset | Customer | Purpose-scoped; revoke sessions on success |
-| Customer email change | Customer | New email pending; notice to old on success |
-| Business password reset | Business user | Platform-level email; may have `businessId` null on related delivery |
+| Customer registration verification | **`CustomerVerificationIntent`** | Exists **before** Customer/CustomerAccount |
+| Customer password reset | Existing **CustomerAccount** (+ Customer) | Purpose-scoped secret |
+| Customer email change | Existing **Customer** / **CustomerAccount** | Pending new email + verify |
+| Business password reset | Existing **User** | Purpose-scoped secret |
+| Invitation | **`BusinessInvitation`** | Own token hash on invitation row |
+| Guest appointment manage | **`AppointmentManageToken`** | Own token hash; multi-active allowed |
 
-### Physical modeling — OPEN
+### 7.2 AuthToken — logical abstraction
 
-Whether these are:
+`AuthToken` remains a **logical** name for purpose-scoped secrets used by password-reset / email-change (and optionally registration verify if not embedded on `CustomerVerificationIntent`).
 
-- **A)** one `AuthToken` / `SecurityToken` table with `purpose` enum + polymorphic subject, or  
-- **B)** separate tables per purpose  
+**Physical modeling — OPEN:**
 
-is **OPEN** (implementation/schema choice). Domain requirements above are fixed either way.
+- **A)** one generic purpose-scoped auth/security token table, and/or  
+- **B)** purpose-specific tables  
 
-Same OPEN covers business password-reset token storage shape.
+`CustomerVerificationIntent` **must exist** as a concrete entity either way; its presence does not depend on choosing A vs B. Invitation and manage tokens already have dedicated entities and are outside this OPEN.
 
 ---
 
@@ -319,7 +348,7 @@ Same OPEN covers business password-reset token storage shape.
 | Concept | Notes |
 | --- | --- |
 | `id` | UUID v7 |
-| `businessId?` | Null only for platform-level (e.g. business password reset) |
+| `businessId` | **Required / NOT NULL (FINAL)** — every MVP notification type is business-contextual; no platform-null path in MVP |
 | `type` | Email type enum (PA notification types) |
 | `dedupeKey` | Unique idempotency key |
 | `appointmentId?` | When appointment-related; tenant-aware FK |
@@ -330,6 +359,8 @@ Same OPEN covers business password-reset token storage shape.
 | Timestamps | `createdAt`, `updatedAt` |
 
 **Jobs:** BullMQ email job payloads are **not** rows in this table; payload stays identifier-only (PA). Delivery row is the idempotency/claim ledger.
+
+Future non-business/platform notifications would require an explicit model extension (out of MVP).
 
 ---
 
@@ -342,11 +373,11 @@ Same OPEN covers business password-reset token storage shape.
 | BusinessMember | `businessId` | |
 | BusinessSession | via `activeBusinessId` / user | Not a “row owned by business” in the same sense; still scoped in queries |
 | Staff, Service, StaffService, hours, TimeOff, ClosedDate | `businessId` | Composite FKs where child points at parent+business |
-| Customer, CustomerAccount, CustomerSession | `businessId` | |
+| Customer, CustomerAccount, CustomerSession, CustomerVerificationIntent | `businessId` | |
 | Appointment, AppointmentManageToken | `businessId` | |
 | BusinessInvitation | `businessId` | |
-| NotificationDelivery | `businessId` nullable | Platform-only null path |
-| Auth tokens (logical) | purpose-dependent | Must not cross tenants |
+| NotificationDelivery | `businessId` **required** | Always tenant-owned in MVP |
+| AuthToken (logical) | purpose-dependent | Must not cross tenants; registration pending uses CustomerVerificationIntent |
 
 Cross-tenant id mismatch → API **404**. Staff on Owner-only CM → **403**.
 
@@ -361,10 +392,12 @@ Cross-tenant id mismatch → API **404**. Staff on Owner-only CM → **403**.
 | Staff | `active` boolean; deactivate blocked if future CONFIRMED; membership/sessions/invites handled per PA |
 | Customer | **Soft delete** (`deletedAt`); account disabled; sessions/tokens revoked |
 | CustomerAccount | Disabled with customer delete / policy; not independently “hard deleted” in MVP |
+| CustomerVerificationIntent | Pending → consumed / revoked / superseded; never creates orphan Customer/Account |
 | Appointment | Status machine; `CANCELLED` terminal; not soft-deleted |
 | Invitation | Pending → consumed/revoked |
 | Sessions | Deleted/revoked on logout, reset, membership disable, etc. |
 | Manage tokens | Revoked/expired; not soft-deleted rows required |
+| NotificationDelivery | Status machine PENDING→…; always tied to a Business |
 
 ---
 
@@ -382,6 +415,7 @@ Business
  ├── Customer
  ├── CustomerAccount
  ├── CustomerSession
+ ├── CustomerVerificationIntent
  ├── Appointment
  ├── AppointmentManageToken
  ├── BusinessInvitation
@@ -411,9 +445,12 @@ CustomerAccount
 
 Appointment
  └── AppointmentManageToken
+
+CustomerVerificationIntent
+ └── (no FK to Customer/Account; resolves into them on verify)
 ```
 
-Logical **AuthToken** intents (verification / resets / email-change) attach to User or CustomerAccount/Customer subjects — physical tables OPEN (§7).
+Logical **AuthToken** covers purpose-scoped secrets for password-reset / email-change (and optionally registration verify if not embedded on `CustomerVerificationIntent`). Invitation and manage tokens are dedicated entities. Physical AuthToken table shape OPEN (§14).
 
 ---
 
@@ -430,19 +467,22 @@ Logical **AuthToken** intents (verification / resets / email-change) attach to U
 | StaffService | Business | Staff↔Service M:N | Staff, Service | Replace set | Yes |
 | BusinessWorkingHour | Business | Weekly open intervals | Business | Replace schedule | Yes |
 | StaffWorkingHour | Business | Staff weekly intervals | Staff | Replace schedule | Yes |
-| StaffTimeOff | Business | Staff exclusion range | Staff | CRUD | Yes |
-| BusinessClosedDate | Business | Full-day closure | Business | CRUD | Yes |
+| StaffTimeOff | Business | Business-local full-day staff exclusion | Staff | CRUD | Yes |
+| BusinessClosedDate | Business | Full-day business closure | Business | CRUD | Yes |
 | Customer | Business | Customer record | Account, Appointment | Soft delete | Yes |
-| CustomerAccount | Business | Customer login | Customer, CustomerSession | Active/disabled | Yes |
+| CustomerAccount | Business | Customer login | Customer, CustomerSession; **stores businessId** | Active/disabled | Yes |
 | CustomerSession | CustomerAccount | Customer realm session | CustomerAccount | Expiry/revoke | Yes |
+| CustomerVerificationIntent | Business | Pending registration before Customer/Account | Business (no Customer FK) | Pending/consumed/revoked/superseded | Yes |
 | Appointment | Business | Booking aggregate | Customer, Staff, Service, manage tokens | Status machine | Yes |
 | AppointmentManageToken | Business | Guest manage auth | Appointment | Expiry/revoke | Yes |
 | BusinessInvitation | Business | Owner/Staff invite | Business, optional Staff | Pending/consumed/revoked | Yes |
-| NotificationDelivery | Business or platform | Email idempotency ledger | optional Appointment | PENDING→… | Usually yes |
-| AuthToken (logical) | Subject-dependent | Verify/reset/email-change | User or Customer* | Single-use/rotate | Purpose-dependent |
+| NotificationDelivery | Business | Email idempotency ledger | Business (required), optional Appointment | PENDING→… | Yes |
+| AuthToken (logical) | Subject-dependent | Password-reset / email-change secrets (optional shared verify secret) | User or CustomerAccount/Customer | Single-use/rotate | Purpose-dependent |
 
-**Persisted entity count (concrete):** **18**  
-**Logical security-token model:** **+1** (physical split OPEN) → treat inventory as **18 + AuthToken(logical)**.
+**Concrete persisted entities:** **19**  
+**Logical abstraction:** **AuthToken (+1)** — physical split OPEN  
+
+Inventory = **19 concrete + AuthToken (logical)**.
 
 ---
 
@@ -452,7 +492,7 @@ Logical **AuthToken** intents (verification / resets / email-change) attach to U
 | --- | --- |
 | Business auth / session | User, BusinessMember, BusinessSession |
 | Invitations | BusinessInvitation, User, BusinessMember, Staff |
-| Customer auth / account | Customer, CustomerAccount, CustomerSession, AuthToken(logical) |
+| Customer auth / account | Customer, CustomerAccount, CustomerSession, CustomerVerificationIntent, AuthToken(logical) |
 | Public profile / availability / book | Business, Service, Staff, hours, TimeOff, ClosedDate, Appointment |
 | Guest manage | Appointment, AppointmentManageToken |
 | Settings / activate | Business |
@@ -467,13 +507,12 @@ Logical **AuthToken** intents (verification / resets / email-change) attach to U
 
 ## 14. OPEN decisions (data model only)
 
-1. **Auth/security token physical model:** single purpose-scoped `AuthToken` table vs separate tables for customer verification, customer password reset, customer email-change, and business password reset (domain purposes FINAL; table shape OPEN).
-2. **Exact DB indexes** beyond known uniques/exclusion (e.g. calendar `(businessId, startsAt)`, CM search) — deferred to schema/implementation.
+1. **AuthToken physical model** for remaining purpose-scoped secrets (customer password reset, customer email-change, business password reset; optionally registration verify secret if not embedded on `CustomerVerificationIntent`): generic purpose-scoped table vs purpose-specific tables. Domain flows FINAL; `CustomerVerificationIntent` concrete either way.
+2. **Exact DB indexes** beyond known uniques/exclusion — deferred to schema/implementation.
 3. **Exact FK on-delete behavior** (RESTRICT vs CASCADE vs SET NULL) per relation — deferred; must not violate soft-delete/history rules.
-4. **NotificationDelivery.recipient / skipReason / lastError** precise column constraints — deferred to schema.
-5. **Whether `CustomerAccount.businessId` is stored vs derived-only** — recommendation store for isolation; confirm at schema time if not already treated as required above (listed as denormalized tenant key; treat as **preferred FINAL**, escalate only if implementers disagree).
+4. **NotificationDelivery** precise column constraints (`recipient`, `skipReason`, `lastError`, lengths) — deferred to schema.
 
-Non-OPEN (already FINAL in PA / API): UUID v7, exclusion overlap rule, snapshot set, manage-token hashing + multi-active manage tokens, invitation model, session realm split, closed-date/all-day TimeOff semantics, booking reference format, StaffService replacement API semantics.
+Non-OPEN (already FINAL): UUID v7; exclusion overlap; snapshots; manage tokens; invitations; session realm split; closed dates; StaffTimeOff **full-day local-date** semantics; booking reference; StaffService replacement; **`CustomerAccount.businessId` stored**; **`NotificationDelivery.businessId` required**; **`CustomerVerificationIntent` concrete**.
 
 ---
 
@@ -481,25 +520,25 @@ Non-OPEN (already FINAL in PA / API): UUID v7, exclusion overlap rule, snapshot 
 
 | Check | Result |
 | --- | --- |
-| PA entity missing from model? | **No** (AuthToken physical split remains OPEN) |
+| PA entity missing from model? | **No** (registration pending covered by CustomerVerificationIntent) |
 | API resource without entity? | **No** |
 | Tenant boundary violation? | **None identified** |
-| Appointment snapshots complete? | **Yes** (no business snapshot, by design) |
+| Appointment snapshots complete? | **Yes** |
 | Customer vs CustomerAccount split? | **Yes** |
-| BusinessMember vs Staff? | **Yes** (optional link, bookable Staff independent) |
-| Appointment concurrency model? | **Yes** (`blockedUntil` + exclusion where status ≠ CANCELLED) |
-| Lifecycle distinctions? | **Yes** (§10) |
+| Registration before account? | **Yes** — CustomerVerificationIntent |
+| BusinessMember vs Staff? | **Yes** |
+| Appointment concurrency model? | **Yes** |
+| Lifecycle distinctions? | **Yes** |
 | UUID v7? | **Yes** |
-| Unnecessary entities? | **No** hard-delete tables, outbox, audit log, RLS policies (out of MVP) |
+| Unnecessary entities? | **No** |
 
-### Missing entity
+### Final review counts
 
-**None** for MVP domain persistence (pending AuthToken physical choice).
-
-### Suspicious relation
-
-**None.** Optional Staff↔BusinessMember must remain optional for staff-without-login.
-
-### Contradiction
-
-**None** vs Product Architecture or API Contract inventory.
+| Metric | Value |
+| --- | --- |
+| Concrete persisted entities | **19** |
+| Logical abstractions | **AuthToken (+1)** |
+| OPEN count | **4** |
+| Missing entity | **None** (after CustomerVerificationIntent) |
+| Suspicious relation | **None** |
+| Contradiction | **None** |
