@@ -144,7 +144,7 @@ Entities will be designed in this order (field-level work in later revisions):
 
 ### 6.1 Architecture-level OPENs
 
-These remain unresolved at the **schema-architecture** layer (carried from Data Model). Do **not** invent new ones. Do **not** prematurely decide them in this skeleton:
+These remain unresolved at the **schema-architecture** layer (carried from Data Model). Do **not** invent new ones. Do **not** prematurely decide them while designing Business or later entities:
 
 1. **AuthToken physical model** — generic purpose-scoped table vs purpose-specific tables for customer password reset, customer email-change, business password reset (and optionally registration verify secret if not embedded on `CustomerVerificationIntent`). `CustomerVerificationIntent` remains concrete either way.  
 2. **Exact DB indexes** beyond known uniques / exclusion constraint — deferred until indexes are chosen during/after entity design and implementation planning.  
