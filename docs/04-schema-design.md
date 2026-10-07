@@ -1,6 +1,6 @@
 # Schema Design — MVP Canonical Persistence Spec
 
-**Status:** Field-level design in progress — **Business** complete; other entities not yet designed  
+**Status:** Field-level design in progress — Business complete; remaining entities pending.  
 **Depends on:**  
 - [`01-product-architecture.md`](./01-product-architecture.md)  
 - [`02-api-contract.md`](./02-api-contract.md)  
@@ -193,86 +193,91 @@ Next field-level pass: **User** (§5 review order #2).
 ## 9. Entity: Business — field-level design
 
 **Kind:** Tenant root (concrete).  
+**Sources:** PA §6 / §5; Data Model §2.1; API settings surface maps to these columns (behavior lives in API Contract, not here).  
 **Does not** carry a `businessId` column (it *is* the tenant).  
 **Does not** use soft delete / `deletedAt`.
 
 ### 9.1 Business — Field Specification
 
-| Field | Type (logical) | Required | Default | Constraints / Semantics |
+| Field | Type (logical) | Required | Default | Constraints / Semantics (source-backed) |
 | --- | --- | --- | --- | --- |
-| `id` | UUID v7 | yes | app-generated on insert | PK; never client-supplied as authorization; PostgreSQL native `uuid` eventually |
-| `name` | string | yes | — | Trimmed; length **1–80**; display name / branding |
-| `slug` | string | yes | — | Global unique; **2–48** chars; `^[a-z0-9]+(?:-[a-z0-9]+)*$`; reserved-word list (PA); never reused; mutable **only** while `publishedAt IS NULL` |
-| `timezone` | string (IANA) | yes | — | Validated + canonical IANA name; sole TZ for local dates/hours/display; **immutable after first publish** (`publishedAt` set) |
-| `currency` | string (ISO 4217) | yes | — | Active ISO 4217; 3-letter **uppercase**; unknown/invalid rejected; no fixed allow-list; **immutable after first publish** |
-| `phone` | string (E.164) \| null | no | `null` | When set: E.164; parse default country **`TR`** if no calling code; empty → `null` |
-| `email` | string \| null | no | `null` | When set: trim + **lowercase** store (contact email; not a separate `normalizedEmail` column on Business); empty → `null` |
-| `address` | string \| null | no | `null` | Plain text; max **300**; empty → `null`; no structured address |
-| `logoUrl` | string \| null | no | `null` | Absolute **HTTPS** URL; max **2048**; no userinfo; reject localhost/private best-effort at validation layer; empty → `null` |
-| `primaryColor` | string \| null | no | `null` | `#` + 6 hex; store **lowercase**; invalid reject; null → platform default at render |
-| `slotIntervalMinutes` | int | yes | **15** | One of **5 \| 10 \| 15 \| 20 \| 30 \| 60** |
-| `minBookingNoticeMinutes` | int | yes | **60** | ≥ 0; **elapsed** duration; public booking + customer reschedule |
-| `maxBookingWindowDays` | int | yes | **60** | **1–365**; **local calendar days** in business TZ |
-| `cancellationNoticeMinutes` | int | yes | **1440** | ≥ 0; **elapsed** duration; customer cancel + customer reschedule eligibility |
-| `status` | enum `BusinessStatus` | yes | **`INACTIVE`** | `INACTIVE` \| `ACTIVE` only; no other lifecycle enums |
-| `publishedAt` | timestamptz(3) \| null | no | `null` | Set **once** on first successful activate to UTC now; **never cleared**; null ⇒ never published |
+| `id` | UUID v7 | yes | app-generated | PK; app-generated UUID v7; eventual PG native `uuid` (PA ID strategy) |
+| `name` | string | yes | — | Trimmed; length **1–80** (PA §6.2) |
+| `slug` | string | yes | — | Global unique; **2–48** chars; `^[a-z0-9]+(?:-[a-z0-9]+)*$`; reserved-word list (PA §6.4); **never reused** (PA §6.4 / §6.9); mutable only while `publishedAt IS NULL` |
+| `timezone` | string (IANA) | yes | — | Validated + canonical IANA; immutable after first publish |
+| `currency` | string (ISO 4217) | yes | — | Active ISO 4217; 3-letter uppercase; unknown rejected; no fixed allow-list; immutable after first publish |
+| `phone` | string (E.164) \| null | no | `null` | When set: E.164; default parse country `TR` if no calling code (PA); empty → `null` |
+| `email` | string \| null | no | `null` | When set: stored **lowercase** (PA §6.2); empty → `null`. **No** separate `normalizedEmail` column on Business. **Max length:** not specified in source docs → field-level length TBD (not invented here) |
+| `address` | string \| null | no | `null` | Plain text; max **300** (PA §6.2); empty → `null`; not structured |
+| `logoUrl` | string \| null | no | `null` | Absolute HTTPS; max **2048** (PA §6.2); no userinfo; reject localhost/private best-effort (PA §6.7); empty → `null` |
+| `primaryColor` | string \| null | no | `null` | `#` + 6 hex; store lowercase (PA §6.2); invalid reject; null means platform default at render time (not a DB default color) |
+| `slotIntervalMinutes` | int | yes | **15** | ∈ {5, 10, 15, 20, 30, 60} (PA) |
+| `minBookingNoticeMinutes` | int | yes | **60** | ≥ 0; elapsed duration (PA) |
+| `maxBookingWindowDays` | int | yes | **60** | 1–365; local calendar days (PA) |
+| `cancellationNoticeMinutes` | int | yes | **1440** | ≥ 0; elapsed duration (PA) |
+| `status` | enum `BusinessStatus` | yes | **`INACTIVE`** | `INACTIVE` \| `ACTIVE` only (PA) |
+| `publishedAt` | timestamptz(3) \| null | no | `null` | Null = never published; set once on first successful activation; never cleared/changed afterward (PA) |
 | `createdAt` | timestamptz(3) | yes | set on create (UTC) | Authoritative creation time |
-| `updatedAt` | timestamptz(3) | yes | set on create/update (UTC) | Last row mutation; settings are last-write-wins (**no** `version` on Business) |
+| `updatedAt` | timestamptz(3) | yes | set on create/update (UTC) | Last mutation; **no** `version` column (PA: settings last-write-wins) |
 
-**Not persisted on Business (explicit non-fields):** `businessId`, `deletedAt`, `version`, `locale`, `rescheduleNotice`, `deactivatedAt`, browser timezone, payment fields.
+**Explicit non-fields (PA):** `rescheduleNotice`, `deactivatedAt`, `locale`, soft-delete column, self-`businessId`, payment fields.
 
 ### 9.2 Business — Invariants
 
-1. `id` is unique globally (PK).  
-2. `slug` is unique globally and never reassigned to another business after use.  
-3. `status ∈ {INACTIVE, ACTIVE}`.  
-4. If `publishedAt IS NULL`, business has never been activated; public slug → 404.  
-5. If `publishedAt IS NOT NULL`, first publish has occurred; `publishedAt` must not change.  
-6. After `publishedAt` is set: `slug`, `timezone`, and `currency` are immutable at the product layer.  
-7. Booking-rule integers always present (defaults at create); contact/branding may be null.  
-8. Activate/reactivate requires go-live checklist (hours, service, staff, staff–service, staff hours) — checklist is **derived**, not stored columns.  
-9. Deactivate sets `status = INACTIVE` and **keeps** `publishedAt`.  
-10. No soft delete; operator offboarding uses INACTIVE + retain rows (PA).  
-11. Money for the tenant is defined by `currency`; prices live on Service/Appointment snapshots, not on Business beyond the currency code.
+Persistence / product invariants (not HTTP codes):
+
+1. `id` is the global primary key.  
+2. `slug` is globally unique and **never reused** across businesses (PA).  
+3. `status ∈ {INACTIVE, ACTIVE}` only.  
+4. `publishedAt IS NULL` ⇔ never successfully activated/published.  
+5. Once `publishedAt` is set, it must not be cleared or overwritten.  
+6. After `publishedAt` is set: `slug`, `timezone`, and `currency` are immutable.  
+7. Booking-rule fields are always non-null (defaults at create); contact/branding may be null.  
+8. Go-live checklist is **derived** from related rows (hours/services/staff/…), not stored Business columns.  
+9. Deactivation sets `status = INACTIVE` and retains `publishedAt`.  
+10. Business is not soft-deleted; MVP offboarding retains the row as `INACTIVE` (PA).  
+11. Tenant currency code is `currency`; monetary amounts live on Service / Appointment snapshots.
 
 ### 9.3 Business — Uniqueness / Lookup Rules
 
-| Rule | Scope | FINAL? |
+| Rule | Scope | Kind |
 | --- | --- | --- |
-| PK `id` | Global | Yes |
-| Unique `slug` | Global | Yes (reserved words + format at app validation) |
-| Public tenant resolution | Lookup by `slug` | Yes (API public surface) |
-| Admin tenant resolution | Session `activeBusinessId` → `id` | Yes (never trust client `businessId`) |
+| Unique `id` (PK) | Global | FINAL persistence |
+| Unique `slug` | Global | FINAL product/data invariant (PA) |
+| Resolve public tenant by `slug` | Global | FINAL product rule (lookup key) |
+| Resolve admin tenant by session → `id` | Session | FINAL product rule; client `businessId` not trusted |
 
-**Candidate** supporting indexes (not a finalized index strategy — **Depends on existing architecture OPEN #2**): unique constraint/index on `slug` is implied by uniqueness; additional lookup indexes TBD later.
+**Physical index strategy** (how uniqueness is enforced in DDL, extra secondary indexes, etc.) remains **architecture OPEN #2**. Uniqueness of `slug` itself is not OPEN.
 
 ### 9.4 Business — Lifecycle
 
 ```text
-Create (CLI)     → status=INACTIVE, publishedAt=null, booking-rule defaults applied
-First activate   → checklist OK → status=ACTIVE, publishedAt=now()  (once)
-Deactivate       → status=INACTIVE, publishedAt unchanged
-Reactivate       → checklist OK → status=ACTIVE, publishedAt unchanged
+Create          → status=INACTIVE, publishedAt=null, booking-rule defaults applied
+First activate  → checklist satisfied → status=ACTIVE, publishedAt=now() (once)
+Deactivate      → status=INACTIVE, publishedAt unchanged
+Reactivate      → checklist satisfied → status=ACTIVE, publishedAt unchanged
 ```
 
-- Public profile: unpublished (`publishedAt` null) → 404; published+INACTIVE → limited inactive message; ACTIVE → full booking profile.  
-- Settings concurrency: last-write-wins; activate/deactivate via conditional status transition (0 rows → 409).  
-- No `Business.version` column.
+Persistence notes:
+
+- `publishedAt` null vs non-null distinguishes never-published vs previously published.  
+- Public visibility / booking eligibility by `status` + `publishedAt` is defined in Product Architecture; **HTTP status codes and response payloads are API Contract concerns**, not schema columns.  
+- Settings updates: last-write-wins; no optimistic `version` on Business (PA). Activate/deactivate are conditional status transitions at the application layer.
 
 ### 9.5 Business — Relationships
 
-Business is the **parent/root** of tenant-owned children (designed later). Conceptual children only:
+Parent/root of tenant-owned children (child field designs pending):
 
 `BusinessMember`, `BusinessSession` (via `activeBusinessId`), `Staff`, `Service`, `StaffService`, `BusinessWorkingHour`, `BusinessClosedDate`, `StaffTimeOff` (via Staff), `Customer`, `CustomerAccount`, `CustomerSession`, `CustomerVerificationIntent`, `Appointment`, `AppointmentManageToken`, `BusinessInvitation`, `NotificationDelivery`.
 
-**FK on-delete for children:** not decided here — **Depends on existing architecture OPEN #3**. Safe statement at Business level only: Business rows are retained for MVP offboarding (no hard-delete cascade of tenant history as a product action).
+Child FK **`ON DELETE`** behavior: **architecture OPEN #3** — not decided here. Safe product statement only: MVP does not hard-delete a business and cascade-erase history as an offboarding action (retain `INACTIVE` row).
 
 ### 9.6 Business — Schema Notes
 
-- Field-level design for Business does **not** close architecture OPENs #1–#3.  
-- AuthToken (#1) has no dependency from Business fields.  
-- Exact secondary indexes (#2): only uniqueness of `slug` is locked as a rule; physical index catalog remains OPEN.  
-- Child FK `ON DELETE` (#3): deferred until child entities are designed.  
-- Implementation mapping (Prisma `@db.Uuid`, `@db.Timestamptz(3)`, enum native vs text) is out of this section’s scope.  
-- Reserved slug list is application/config enforcement, not a Business column.  
-- Ambiguity noted without deciding: whether `Business.email` max length needs an explicit numeric cap beyond “valid email” — PA specifies lowercase nullable email but no max length for business email (unlike Customer flows); **leave unbound except email-format validation** until a later field pass if product requires a cap — do not invent a length here.
+- Does **not** close architecture OPENs #1–#3.  
+- #1 AuthToken: no Business-field dependency.  
+- #2 Indexes: `slug` uniqueness is FINAL; exact index DDL / secondary indexes remain OPEN.  
+- #3 FK on-delete: deferred until children are designed.  
+- Length/format limits in §9.1 for `name` / `slug` / `address` / `logoUrl` / booking-rule bounds are taken from **PA §6**, not invented in this schema pass.  
+- `Business.email` max length is **not** in source docs → left TBD (not invented).  
+- Prisma/`@db` mapping is implementation, not specified here.
